@@ -5,165 +5,180 @@ description: "[CK] Query Pancake POS & Chat API directly (no MCP). Use when user
 
 # Pancake Direct API Skill
 
-Query Pancake POS and Chat APIs directly via Python scripts — no MCP server needed.
+Query Pancake POS and Chat APIs directly via inline Python — **no MCP server, no imports needed**.
 
 ## When to Use
 
 - User asks for Pancake data: orders, warehouses, conversations, messages, geo data
-- User wants to query Pancake without starting MCP server
 - Quick data lookups and reporting from Pancake
-- Debugging/testing Pancake API connectivity
+- Any Pancake query without MCP protocol overhead
 
 ## Prerequisites
 
-Set env vars before running scripts:
-```bash
-export PANCAKE_API_KEY="your_pos_api_key"
-export PANCAKE_ACCESS_TOKEN="your_chat_token"  # optional, falls back to API key
-```
+Check for API key (in order of precedence):
+1. `PANCAKE_API_KEY` env var
+2. `.env` file in current directory or `/cowork_mcp/.env`
 
-Or read from `.env` file in the project directory.
-
-## Python Client Location
-
-The Pancake API clients live at:
-- **POS API:** `/cowork_mcp/pancake-mcp-server/src/pancake_mcp/client.py`
-- **Chat API:** `/cowork_mcp/pancake-mcp-server/src/pancake_mcp/chat_client.py`
-
-## How to Run Scripts
-
-Use the venv Python from the pancake-mcp-server package (if installed):
-
-```bash
-# Option 1: If package is installed
-cd /cowork_mcp/pancake-mcp-server && python3 -c "..."
-
-# Option 2: Use the skill scripts directly
-~/.claude/skills/.venv/bin/python3 ~/.claude/skills/pancake/scripts/query.py [args]
-
-# Option 3: Inline async Python via bash
-python3 - <<'EOF'
-import asyncio, os, sys
-sys.path.insert(0, '/cowork_mcp/pancake-mcp-server/src')
-from pancake_mcp.client import PancakeClient
-
-async def main():
-    key = os.environ.get('PANCAKE_API_KEY', '')
-    if not key:
-        print("Error: PANCAKE_API_KEY not set")
-        return
-    async with PancakeClient(key) as c:
-        result = await c.get_shops()
-        import json
-        print(json.dumps(result, ensure_ascii=False, indent=2))
-
-asyncio.run(main())
-EOF
-```
-
-## Available API Methods
-
-### POS API (`PancakeClient`) — Base: `https://pos.pages.fm/api/v1`
-
-| Method | Description |
-|--------|-------------|
-| `get_shops()` | List all shops (get shop_id from here first) |
-| `get_payment_methods(shop_id)` | Bank payment methods |
-| `get_provinces(country_code="VN")` | Vietnam provinces |
-| `get_districts(province_id)` | Districts in a province |
-| `get_communes(district_id)` | Communes in a district |
-| `list_orders(shop_id, **filters)` | Search orders (status, page, page_size, keyword, from_date, to_date) |
-| `get_order(shop_id, order_id)` | Single order details |
-| `create_order(shop_id, payload)` | Create new order |
-| `update_order(shop_id, order_id, payload)` | Update order |
-| `get_order_tags(shop_id)` | Available order tags |
-| `get_order_sources(shop_id)` | Order sources (Facebook, Website...) |
-| `get_active_promotions(shop_id, payload)` | Active promotions for items |
-| `arrange_shipment(shop_id, payload)` | Hand order to carrier |
-| `get_tracking_url(shop_id, payload)` | Customer tracking link |
-| `list_warehouses(shop_id)` | All warehouses |
-| `create_warehouse(shop_id, payload)` | Create warehouse |
-| `update_warehouse(shop_id, warehouse_id, payload)` | Update warehouse |
-| `get_inventory_history(shop_id, **filters)` | Stock movement history |
-| `list_return_orders(shop_id, **filters)` | Return/exchange orders |
-| `create_return_order(shop_id, payload)` | Process a return |
-
-### Chat API (`PancakeChatClient`) — Base: `https://pages.fm/api/v1`
-
-| Method | Description |
-|--------|-------------|
-| `list_conversations(page_id, **filters)` | List inbox conversations |
-| `get_conversation(page_id, conversation_id)` | Conversation details |
-| `update_conversation(page_id, conversation_id, payload)` | Assign/tag/close |
-| `get_messages(page_id, conversation_id, **params)` | Message history |
-| `send_message(page_id, conversation_id, payload)` | Send a message |
-| `get_customer(page_id, psid)` | Customer profile by PSID |
-
-## Common Query Patterns
-
-### Get shops & orders
 ```python
-import asyncio, os, sys, json
-sys.path.insert(0, '/cowork_mcp/pancake-mcp-server/src')
-from pancake_mcp.client import PancakeClient
+import os
+from pathlib import Path
+
+def load_env():
+    for env_path in [Path('.env'), Path('/cowork_mcp/.env')]:
+        if env_path.exists():
+            for line in env_path.read_text().splitlines():
+                if '=' in line and not line.startswith('#'):
+                    k, v = line.split('=', 1)
+                    os.environ.setdefault(k.strip(), v.strip())
+
+load_env()
+api_key = os.environ.get('PANCAKE_API_KEY', '')
+chat_token = os.environ.get('PANCAKE_ACCESS_TOKEN', '') or api_key
+```
+
+## Base URLs & Auth
+
+- **POS API:** `https://pos.pages.fm/api/v1` — auth via `?api_key=<key>` query param
+- **Chat API:** `https://pages.fm/api/v1` — auth via `?access_token=<token>` query param
+
+## Self-Contained Query Template
+
+Always use this pattern — no external imports needed beyond `httpx`:
+
+```python
+import asyncio, os, json
+from pathlib import Path
+import httpx
+
+# Load env
+def load_env():
+    for p in [Path('.env'), Path('/cowork_mcp/.env')]:
+        if p.exists():
+            for line in p.read_text().splitlines():
+                if '=' in line and not line.startswith('#'):
+                    k, v = line.split('=', 1)
+                    os.environ.setdefault(k.strip(), v.strip())
+
+load_env()
+
+POS_BASE = "https://pos.pages.fm/api/v1"
+CHAT_BASE = "https://pages.fm/api/v1"
+API_KEY = os.environ.get('PANCAKE_API_KEY', '')
+CHAT_TOKEN = os.environ.get('PANCAKE_ACCESS_TOKEN', '') or API_KEY
+
+if not API_KEY:
+    print("Error: PANCAKE_API_KEY not set")
+    exit(1)
+
+async def get(base, path, token_param, token, **params):
+    async with httpx.AsyncClient(timeout=30) as c:
+        r = await c.get(f"{base}{path}", params={token_param: token, **{k: v for k, v in params.items() if v is not None}})
+        r.raise_for_status()
+        return r.json()
+
+async def post(base, path, token_param, token, body):
+    async with httpx.AsyncClient(timeout=30) as c:
+        r = await c.post(f"{base}{path}", params={token_param: token}, json=body)
+        r.raise_for_status()
+        return r.json()
 
 async def main():
-    async with PancakeClient(os.environ['PANCAKE_API_KEY']) as c:
-        shops = await c.get_shops()
-        shop_id = shops['data'][0]['id']
-        orders = await c.list_orders(shop_id, status='new', page=1, page_size=20)
-        print(json.dumps(orders, ensure_ascii=False, indent=2))
+    # === REPLACE THIS SECTION WITH YOUR QUERY ===
+    result = await get(POS_BASE, "/shops", "api_key", API_KEY)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
 
 asyncio.run(main())
 ```
 
-### List conversations
+## Available Endpoints
+
+### POS API (`https://pos.pages.fm/api/v1`, auth: `api_key`)
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/shops` | GET | List shops → get `shop_id` |
+| `/shops/{shop_id}/bank_payments` | GET | Payment methods |
+| `/geo/provinces` | GET | Vietnam provinces (`?country_code=VN`) |
+| `/geo/districts` | GET | Districts (`?province_id=`) |
+| `/geo/communes` | GET | Communes (`?district_id=`) |
+| `/shops/{shop_id}/orders` | GET | List orders (`?status=&page=&page_size=&keyword=&from_date=&to_date=`) |
+| `/shops/{shop_id}/orders/{order_id}` | GET | Single order details |
+| `/shops/{shop_id}/orders` | POST | Create order |
+| `/shops/{shop_id}/orders/{order_id}` | PUT | Update order |
+| `/shops/{shop_id}/orders/tags` | GET | Order tags |
+| `/shops/{shop_id}/order_source` | GET | Order sources |
+| `/shops/{shop_id}/orders/arrange_shipment` | POST | Hand to carrier |
+| `/shops/{shop_id}/orders/get_tracking_url` | POST | Tracking URL |
+| `/shops/{shop_id}/orders/get_promotion_advance_active` | POST | Active promotions |
+| `/shops/{shop_id}/warehouses` | GET | List warehouses |
+| `/shops/{shop_id}/warehouses` | POST | Create warehouse |
+| `/shops/{shop_id}/warehouses/{warehouse_id}` | PUT | Update warehouse |
+| `/shops/{shop_id}/inventory_histories` | GET | Stock history |
+| `/shops/{shop_id}/orders_returned` | GET | Return orders |
+| `/shops/{shop_id}/orders_returned` | POST | Create return |
+
+### Chat API (`https://pages.fm/api/v1`, auth: `access_token`)
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/pages/{page_id}/conversations` | GET | List conversations (`?type=INBOX&status=open&keyword=&page=`) |
+| `/pages/{page_id}/conversations/{conv_id}` | GET | Conversation details |
+| `/pages/{page_id}/conversations/{conv_id}` | PUT | Update (assign/tag/close) |
+| `/pages/{page_id}/conversations/{conv_id}/messages` | GET | Message history |
+| `/pages/{page_id}/conversations/{conv_id}/messages` | POST | Send message |
+
+## Common Query Examples
+
+### List new orders today
 ```python
-import asyncio, os, sys, json
-sys.path.insert(0, '/cowork_mcp/pancake-mcp-server/src')
-from pancake_mcp.chat_client import PancakeChatClient
-
-async def main():
-    token = os.environ.get('PANCAKE_ACCESS_TOKEN') or os.environ['PANCAKE_API_KEY']
-    async with PancakeChatClient(token) as c:
-        convs = await c.list_conversations('YOUR_PAGE_ID', status='open', page_size=20)
-        print(json.dumps(convs, ensure_ascii=False, indent=2))
-
-asyncio.run(main())
+from datetime import date
+result = await get(POS_BASE, f"/shops/{shop_id}/orders", "api_key", API_KEY,
+    status="new", from_date=str(date.today()), page=1, page_size=20)
 ```
 
-## Error Handling
-
-`PancakeAPIError` is raised for non-2xx responses:
+### Get a shop's ID first
 ```python
-from pancake_mcp.client import PancakeAPIError
-try:
-    result = await c.get_shops()
-except PancakeAPIError as e:
-    print(f"API error {e.status_code}: {e}")
+shops = await get(POS_BASE, "/shops", "api_key", API_KEY)
+shop_id = shops['data'][0]['id']
+```
+
+### List open conversations
+```python
+result = await get(CHAT_BASE, f"/pages/{page_id}/conversations", "access_token", CHAT_TOKEN,
+    status="open", type="INBOX", page_size=20)
+```
+
+### Send a message
+```python
+result = await post(CHAT_BASE, f"/pages/{page_id}/conversations/{conv_id}/messages",
+    "access_token", CHAT_TOKEN, {"message": "Xin chào!"})
+```
+
+### Create an order
+```python
+result = await post(POS_BASE, f"/shops/{shop_id}/orders", "api_key", API_KEY, {
+    "customer_name": "Nguyễn Văn A",
+    "customer_phone": "0901234567",
+    "items": [{"product_id": "abc123", "quantity": 2}]
+})
 ```
 
 ## Implementation Steps
 
 When user asks for Pancake data:
 
-1. **Check env vars** — verify `PANCAKE_API_KEY` is set (check `.env` file if needed)
-2. **Write inline Python** — use the pattern above with `sys.path.insert` to import clients
-3. **Run via Bash tool** — execute the script and capture output
-4. **Parse & present** — format the JSON response for the user
-5. **Handle errors** — if `PancakeAPIError`, check API key validity or endpoint availability
+1. **Load env** — check `PANCAKE_API_KEY` from env or `.env` file
+2. **Use template above** — fill in the endpoint and params for the specific query
+3. **Run via Bash tool** — `python3 -c "..."` or heredoc `python3 - <<'EOF' ... EOF`
+4. **Parse result** — extract relevant fields from JSON and present clearly
+5. **Error handling** — `httpx.HTTPStatusError` for API errors, check status code
 
-## Loading .env
+## Error Codes
 
-If `PANCAKE_API_KEY` not in env, check for `.env` file:
-```python
-import os
-from pathlib import Path
-
-env_file = Path('/cowork_mcp/.env')
-if env_file.exists():
-    for line in env_file.read_text().splitlines():
-        if '=' in line and not line.startswith('#'):
-            k, v = line.split('=', 1)
-            os.environ.setdefault(k.strip(), v.strip())
-```
+| Status | Meaning |
+|--------|---------|
+| 401 | Invalid API key |
+| 403 | No permission |
+| 404 | Resource not found |
+| 422 | Invalid request body |
+| 429 | Rate limit exceeded — wait and retry |
